@@ -1,0 +1,41 @@
+<Table-Card
+        @register="register"
+        instance_name="table_schedules"
+
+        header='Schedules'
+        :table_attributes="{
+            'data-url': build_api_url('scheduling', 'schedules', {trailing_slash: true}) + project_id,
+            id: 'table_schedules',
+            'data-page-size': 25,
+        }"
+        container_classes="mt-3"
+
+>
+    <template #table_headers>
+        <th data-visible="false" data-field="id">id</th>
+        <th scope="col" data-sortable="true" data-field="project_id"
+            v-if="mode === 'administration'"
+        >Project Id</th>
+        <th scope="col" data-sortable="true" data-field="rpc_func"
+            data-formatter=tableFormatters.rpc_func
+        >Schedule Action</th>
+        <th scope="col" data-sortable="true" data-field="name">Name</th>
+        <th scope="col" data-sortable="true" data-field="cron"
+            data-formatter=tableFormatters.cron
+            data-width="250" data-width-unit="px"
+        >Cron</th>
+        <th scope="col" data-sortable="true" data-field="active"
+            data-formatter=tableFormatters.active
+        >Active</th>
+        <th scope="col" data-sortable="true" data-field="rpc_kwargs"
+            data-formatter=tableFormatters.rpc_kwargs
+            v-if="mode === 'administration'"
+        >rpc_kwargs</th>
+        <th scope="col" data-sortable="true" data-field="last_run"
+            data-formatter=tableFormatters.last_run
+        >Last Run</th>
+{#        <th scope="col" data-sortable="true" data-field="actions"#}
+{#            data-align="right"#}
+{#            data-formatter=tableFormatters.scheduleActions>.</th>#}
+    </template>
+</Table-Card>

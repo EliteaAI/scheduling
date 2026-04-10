@@ -1,0 +1,12 @@
+<scheduling
+        instance_name="scheduling"
+        @register="register"
+        params_table="{{ template_slot("params_table_content", payload = {
+                "caption": "",
+                "description": "",
+                "default_params": [],
+                "disabled_names": [],
+                "hidden_columns": [],
+                "modal_id": False
+            }) }}"
+></scheduling>
