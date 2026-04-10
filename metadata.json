@@ -1,7 +1,10 @@
 {
   "name": "Scheduling Plugin",
-  "version": "0.4",
+  "version": "0.5",
   "module": "plugins.scheduling",
-  "depends_on": ["shared", "secrets"],
+  "depends_on": [
+    "shared",
+    "secrets"
+  ],
   "init_after": []
 }
