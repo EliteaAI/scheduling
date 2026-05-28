@@ -47,7 +47,7 @@ class Schedule(db_tools.AbstractBaseMixin, rpc_tools.RpcMixin, db.Base):
             log.info(f'Is it time_to_run? {self.time_to_run}')
         #
         if self.time_to_run:
-            log.info('Running now: Schedule(id=%s, name=%s)', self.id, self.name)
+            log.debug('Running now: Schedule(id=%s, name=%s)', self.id, self.name)
             tracer = self._get_tracer()
             if tracer:
                 self._run_traced(tracer)
