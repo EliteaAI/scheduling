@@ -1,6 +1,6 @@
 {
   "name": "Scheduling Plugin",
-  "version": "0.6",
+  "version": "0.7",
   "module": "plugins.scheduling",
   "depends_on": [
     "shared",
