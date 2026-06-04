@@ -53,6 +53,43 @@ class RPC:
                 schedule.active = value
                 session.commit()
 
+    @web.rpc('scheduling_update_schedule')
+    def update_schedule(self, name: str, cron: str = None, active: bool = None) -> bool:
+        """Update an existing schedule's cron and/or active flag in place.
+
+        Returns True if any field changed, False otherwise (including row not
+        found and invalid cron). Either field can be omitted to leave it
+        unchanged.
+        """
+        if cron is not None:
+            try:
+                croniter(cron)
+            except Exception as error:
+                log.error(
+                    "update_schedule: invalid cron=%r name=%s error=%r",
+                    cron, name, error,
+                )
+                return False
+        with db.with_project_schema_session(None) as session:
+            schedule = session.query(Schedule).where(Schedule.name == name).first()
+            if not schedule:
+                log.warning("update_schedule: schedule not found name=%s", name)
+                return False
+            changed = False
+            if cron is not None and schedule.cron != cron:
+                schedule.cron = cron
+                changed = True
+            if active is not None and schedule.active != bool(active):
+                schedule.active = bool(active)
+                changed = True
+            if changed:
+                session.commit()
+                log.info(
+                    "update_schedule: name=%s cron=%s active=%s",
+                    name, schedule.cron, schedule.active,
+                )
+            return changed
+
     @web.rpc('scheduling_time_to_run', 'time_to_run')
     def time_to_run(self, cron: str, last_run: str, timezone: str) -> bool:
         """Determine if it is time to run a scheduled task.
