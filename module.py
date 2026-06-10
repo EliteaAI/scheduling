@@ -17,6 +17,7 @@
 
 """ Module """
 import time
+from datetime import datetime
 from functools import partial
 from queue import Empty
 from threading import Thread
@@ -95,14 +96,24 @@ class Module(module.ModuleModel):
                     if debug:
                         log.info(f'Running schedules... with poll_period {poll_period}')
                     #
+                    retrieval_started = time.monotonic()
+                    log.info(f'Schedules retrieval started at {datetime.utcnow().isoformat()}Z')
                     with db.with_project_schema_session(None) as session:
                         schedules = session.query(Schedule).filter(Schedule.active == True).all()
+                        log.info(
+                            f'Schedules retrieved: count={len(schedules)} '
+                            f'in {time.monotonic() - retrieval_started:.3f}s'
+                        )
                         for sc in schedules:
                             try:
                                 sc.run(debug)
                                 session.commit()
                             except Exception as e:
                                 log.critical(e)
+                    log.info(
+                        f'Schedules retrieval finished at {datetime.utcnow().isoformat()}Z '
+                        f'(total {time.monotonic() - retrieval_started:.3f}s)'
+                    )
                 except:  # pylint: disable=W0702
                     log.exception("Error in scheduler loop, continuing in 5 seconds")
                     time.sleep(5)
