@@ -48,6 +48,14 @@ class Schedule(db_tools.AbstractBaseMixin, rpc_tools.RpcMixin, db.Base):
         #
         if self.time_to_run:
             log.debug('Running now: Schedule(id=%s, name=%s)', self.id, self.name)
+            # Persist last_run BEFORE dispatching the handler RPC. A slow or
+            # hanging handler that exceeds the 5s call timeout used to leave
+            # last_run unchanged, which made time_to_run permanently true and
+            # caused the scheduler to refire on every poll. Cron is the
+            # source of truth for cadence; whether the handler completed
+            # within the timeout does not change when the next tick is due.
+            self.last_run = datetime.now()
+            self.commit()
             tracer = self._get_tracer()
             if tracer:
                 self._run_traced(tracer)
@@ -92,13 +100,22 @@ class Schedule(db_tools.AbstractBaseMixin, rpc_tools.RpcMixin, db.Base):
                 duration_ms = (time_module.perf_counter() - start) * 1000
                 span.set_attribute('schedule.duration_ms', duration_ms)
                 span.set_status(Status(StatusCode.OK))
-                self.last_run = datetime.now()
-                self.commit()
             except Empty:
                 duration_ms = (time_module.perf_counter() - start) * 1000
                 span.set_attribute('schedule.duration_ms', duration_ms)
                 span.set_status(Status(StatusCode.ERROR, f'RPC timeout: {self.rpc_func}'))
                 log.critical(f'Schedule func failed to run {self.rpc_func}')
+            except Exception as exc:  # pylint: disable=W0703
+                duration_ms = (time_module.perf_counter() - start) * 1000
+                span.set_attribute('schedule.duration_ms', duration_ms)
+                span.set_status(Status(StatusCode.ERROR, f'RPC error: {self.rpc_func}: {exc}'))
+                span.record_exception(exc)
+                log.exception(
+                    'Schedule func raised: schedule_id=%s name=%s rpc_func=%s '
+                    'project_id=%s duration_ms=%.1f exc_type=%s exc=%r',
+                    self.id, self.name, self.rpc_func, self.project_id,
+                    duration_ms, type(exc).__name__, exc,
+                )
 
     def _run_untraced(self):
         """ Execute schedule RPC without tracing (fallback) """
@@ -108,7 +125,12 @@ class Schedule(db_tools.AbstractBaseMixin, rpc_tools.RpcMixin, db.Base):
                 timeout=5,
                 **self.rpc_kwargs
             )
-            self.last_run = datetime.now()
-            self.commit()
         except Empty:
             log.critical(f'Schedule func failed to run {self.rpc_func}')
+        except Exception as exc:  # pylint: disable=W0703
+            log.exception(
+                'Schedule func raised: schedule_id=%s name=%s rpc_func=%s '
+                'project_id=%s exc_type=%s exc=%r',
+                self.id, self.name, self.rpc_func, self.project_id,
+                type(exc).__name__, exc,
+            )
