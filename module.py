@@ -31,6 +31,7 @@ from .init_db import init_db
 
 from tools import VaultClient
 from tools import config as c
+from tools import this
 
 from .models.schedule import Schedule
 
@@ -52,6 +53,8 @@ class Module(module.ModuleModel):
         self.descriptor.init_blueprint()
 
         self.descriptor.init_rpcs()
+
+        self.descriptor.init_methods()
 
         # self.context.slot_manager.register_callback('security_scheduling_test_create', render_security_test_create)
         self.descriptor.init_slots()
@@ -78,6 +81,13 @@ class Module(module.ModuleModel):
         """ Ready callback """
         log.info("Starting scheduling thread")
         self.thread.start()
+        try:
+            this.for_module("admin").module.register_admin_task(
+                "cleanup_orphaned_schedules",
+                self.cleanup_orphaned_schedules,
+            )
+        except Exception:  # pylint: disable=W0703
+            log.exception("Failed to register scheduling admin tasks")
 
     def deinit(self):  # pylint: disable=R0201
         """ De-init module """
