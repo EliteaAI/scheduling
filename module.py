@@ -157,37 +157,12 @@ class Module(module.ModuleModel):
                 ...
 
     def init_ui(self):
-        from tools import theme
+        from tools import auth  # pylint: disable=E0401,C0415
 
-        prefix = 'configuration_scheduling_'
-
-        theme.register_subsection(
-            'configuration', 'schedules',
-            'Schedules',
-            title="Schedules",
-            kind="slot",
-            permissions={
-                "permissions": ["configuration.scheduling"],
-                "recommended_roles": {
-                    "administration": {"admin": True, "viewer": True, "editor": True},
-                    "default": {"admin": True, "viewer": True, "editor": True},
-                }},
-            prefix=prefix,
-            # weight=5,
-        )
-
-        theme.register_mode_subsection(
-            "administration", "configuration",
-            "schedules", "Schedules",
-            title="Integrations",
-            kind="slot",
-            permissions={
-                "permissions": ["configuration.scheduling"],
-                "recommended_roles": {
-                    "administration": {"admin": True, "viewer": True, "editor": True},
-                    "default": {"admin": True, "viewer": True, "editor": True},
-                }},
-            prefix=prefix,
-            # icon_class="fas fa-server fa-fw",
-            # weight=2,
-        )
+        auth.register_permissions({
+            "permissions": ["configuration.scheduling"],
+            "recommended_roles": {
+                "administration": {"admin": True, "viewer": True, "editor": True},
+                "default": {"admin": True, "viewer": True, "editor": True},
+            }
+        })
