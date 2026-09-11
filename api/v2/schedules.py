@@ -6,6 +6,7 @@ from tools import api_tools, db
 from pydantic.v1 import ValidationError
 from ...models.main_pd import SchedulePutModel
 from ...models.schedule import Schedule
+from ...utils.managed_schedules import build_managed_conflict
 from tools import auth
 
 
@@ -36,7 +37,11 @@ class ProjectAPI(api_tools.APIModeHandler):
 class AdminAPI(api_tools.APIModeHandler):
     @auth.decorators.check_api(["configuration.scheduling.schedules.view"])
     def get(self, project_id: int, **kwargs):
-        schedules = [i.to_json() for i in Schedule.query.all()]
+        schedules = []
+        for schedule in Schedule.query.all():
+            row = schedule.to_json()
+            row['managed_by'] = self.module.managed_binding_for(schedule)
+            schedules.append(row)
         return {'total': len(schedules), 'rows': schedules}, 200
 
     @auth.decorators.check_api(["configuration.scheduling.schedules.edit"])
@@ -48,10 +53,26 @@ class AdminAPI(api_tools.APIModeHandler):
             return e.errors(), 400
         # log.info('UPD %s', data.dict(exclude_unset=True))
 
+        changes = data.dict(exclude_unset=True)
+
         with db.with_project_schema_session(None) as session:
+            schedule = session.query(Schedule).where(
+                Schedule.id == schedule_id
+            ).first()
+            if not schedule:
+                return {'error': f'Schedule {schedule_id} not found'}, 404
+
+            managed_by = self.module.managed_binding_for(schedule)
+            if managed_by is not None:
+                log.info(
+                    'Refused managed schedule edit: name=%s fields=%s',
+                    schedule.name, sorted(changes),
+                )
+                return build_managed_conflict(schedule.name, managed_by), 409
+
             session.query(Schedule).where(
                 Schedule.id == schedule_id
-            ).update(data.dict(exclude_unset=True))
+            ).update(changes)
             session.commit()
         return None, 204
 
