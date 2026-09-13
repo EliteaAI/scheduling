@@ -115,10 +115,19 @@ def plugin():
     managed_schedules = _load_module(
         "utils/managed_schedules.py", "ms6556", {},
     )
+    logged = []
+
+    def _at(level):
+        def _log(message, *args, **_kwargs):
+            logged.append((level, message, args))
+        return _log
+
+    # Recorded rather than dropped: a cadence overwrite leaves nothing behind
+    # but this line, and template and args are kept apart because in the
+    # rendered text a literal and an interpolated value are the same thing.
     quiet = types.SimpleNamespace(
-        info=lambda *a, **k: None, warning=lambda *a, **k: None,
-        error=lambda *a, **k: None, exception=lambda *a, **k: None,
-        critical=lambda *a, **k: None, debug=lambda *a, **k: None,
+        info=_at("info"), warning=_at("warning"), error=_at("error"),
+        exception=_at("exception"), critical=_at("critical"), debug=_at("debug"),
     )
     rpc = _load_module("rpc/main.py", "rpc6556", {
         "Schedule": Schedule,
@@ -158,6 +167,7 @@ def plugin():
     obj = types.SimpleNamespace(
         managed_schedules={}, _managed_owners={}, managed_schedules_ready=True,
         session_factory=factory,
+        logged=logged,
         context=types.SimpleNamespace(
             module_manager=types.SimpleNamespace(descriptors={}),
         ),
@@ -455,3 +465,35 @@ def test_a_malformed_binding_does_not_cost_the_later_plugins_theirs(plugin):
 
     assert "index_scheduling" in plugin.managed_schedules
     assert "bad" not in plugin.managed_schedules
+
+
+def test_a_cadence_overwrite_says_what_it_replaced(plugin):
+    """This push is the only writer of a config-owned row and the row is
+    read-only everywhere else, so an operator whose cadence is replaced has
+    nothing but this line to find out from."""
+    _own(plugin)
+    _insert(plugin, name="index_scheduling", cron="*/30 * * * *",
+            rpc_func=HANDLER, active=True)
+    plugin.logged.clear()
+    assert plugin.update_schedule(
+        name="index_scheduling", cron="* * * * *", active=False,
+    )
+    _, template, args = next(
+        entry for entry in plugin.logged if entry[0] == "info"
+    )
+    assert "cron=%s->%s" in template
+    assert "active=%s->%s" in template
+    # Asserted whole: each half can be dropped on its own, and the disable is
+    # the half the upgrade note names as the operator-visible event.
+    assert args == ("index_scheduling", "*/30 * * * *", "* * * * *", True, False)
+
+
+def test_an_unchanged_row_logs_nothing(plugin):
+    """Every boot pushes the same config, so logging a no-op write would bury
+    the one line that matters."""
+    _own(plugin)
+    _insert(plugin, name="index_scheduling", cron="* * * * *",
+            rpc_func=HANDLER, active=True)
+    plugin.logged.clear()
+    assert not plugin.update_schedule(name="index_scheduling", cron="* * * * *")
+    assert [entry for entry in plugin.logged if entry[0] == "info"] == []

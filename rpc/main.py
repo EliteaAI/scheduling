@@ -197,6 +197,7 @@ class RPC:
                     [item.id for item in duplicates],
                 )
             changed = False
+            previous = (schedule.cron, schedule.active)
             if cron is not None and schedule.cron != cron:
                 schedule.cron = cron
                 changed = True
@@ -209,9 +210,14 @@ class RPC:
                     changed = True
             if changed:
                 session.commit()
+                # Previous values included so an overwrite is attributable:
+                # this push is the only thing that writes a config-owned row,
+                # and the row is read-only everywhere else, so without the old
+                # cadence here there is nothing to say what it replaced.
                 log.info(
-                    "update_schedule: name=%s cron=%s active=%s",
-                    name, schedule.cron, schedule.active,
+                    "update_schedule: name=%s cron=%s->%s active=%s->%s",
+                    name, previous[0], schedule.cron,
+                    previous[1], schedule.active,
                 )
             return changed
 
