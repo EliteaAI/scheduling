@@ -1,4 +1,4 @@
-"""Issue #6556 — the schedule RPCs, exercised against a real database.
+"""The schedule RPCs, exercised against a real database.
 
 Everything here used to be asserted by reading the source, and each round that
 let a one-token change restore the original bug with a green suite. These drive
@@ -19,8 +19,6 @@ Base = declarative_base()
 
 
 class Schedule(Base):
-    """Mirrors models/schedule.py's columns; the RPCs only use these."""
-
     __tablename__ = "schedule"
     id = Column(Integer, primary_key=True)
     name = Column(String(64), nullable=False)
@@ -32,8 +30,6 @@ class Schedule(Base):
 
 
 class _ScheduleModelPD:
-    """Stands in for the pydantic model: parse, round-trip, save."""
-
     _session_factory = None
 
     def __init__(self, **data):
@@ -66,11 +62,6 @@ class _ScheduleModelPD:
 
 
 def _strip_supplied_imports(source, supplied):
-    """Drop the imports whose names the caller is providing.
-
-    The relative ones cannot resolve outside the package, and the pylon/tools
-    ones would pull in a runtime this has no business starting.
-    """
     out, skipping = [], False
     for line in source.splitlines():
         stripped = line.strip()
@@ -98,7 +89,6 @@ def _load_module(path, name, namespace):
 
 @pytest.fixture
 def plugin():
-    """A stand-in module object carrying the real RPC and registry methods."""
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
@@ -122,9 +112,6 @@ def plugin():
             logged.append((level, message, args))
         return _log
 
-    # Recorded rather than dropped: a cadence overwrite leaves nothing behind
-    # but this line, and template and args are kept apart because in the
-    # rendered text a literal and an interpolated value are the same thing.
     quiet = types.SimpleNamespace(
         info=_at("info"), warning=_at("warning"), error=_at("error"),
         exception=_at("exception"), critical=_at("critical"), debug=_at("debug"),
@@ -165,7 +152,7 @@ def plugin():
     exec(compile("class _M:\n" + body + registry_body, "module.py", "exec"), ns)
 
     obj = types.SimpleNamespace(
-        managed_schedules={}, _managed_owners={}, managed_schedules_ready=True,
+        managed_schedules={}, _managed_owners={}, managed_schedules_collected=True,
         session_factory=factory,
         logged=logged,
         context=types.SimpleNamespace(
@@ -213,11 +200,8 @@ PAYLOAD = {
 }
 
 
-# --- creation identity (#1, #5) ----------------------------------------------
 
 def test_a_renamed_handler_gets_the_real_row_created_beside_it(plugin):
-    """match_handler False restores the deadlock: the stale row is taken for
-    the real one, so the platform's schedule is never created."""
     _own(plugin)
     stale = _insert(plugin, name="index_scheduling", rpc_func="old_handler_name")
 
@@ -229,8 +213,6 @@ def test_a_renamed_handler_gets_the_real_row_created_beside_it(plugin):
 
 
 def test_an_ordinary_schedule_is_not_duplicated_when_its_handler_changes(plugin):
-    """match_handler True for everything inserts a second row the day any
-    unmanaged handler is renamed."""
     _insert(plugin, name="mcp_servers_handler", rpc_func="old_mcp_handler")
 
     plugin.create_if_not_exists({
@@ -242,8 +224,6 @@ def test_an_ordinary_schedule_is_not_duplicated_when_its_handler_changes(plugin)
 
 
 def test_creation_never_adopts_a_project_row(plugin):
-    """Scoped to global rows: a project schedule of the same name belongs to
-    the project, and adopting it would leave the platform without one."""
     _own(plugin)
     _insert(plugin, name="index_scheduling", rpc_func=HANDLER, project_id=2)
 
@@ -252,10 +232,8 @@ def test_creation_never_adopts_a_project_row(plugin):
     assert len(_rows(plugin, project_id=None)) == 1
 
 
-# --- the read-only guard itself (#2) -----------------------------------------
 
 def test_an_owned_row_is_reported_owned(plugin):
-    """The single decision point behind both the listing and the edit."""
     _own(plugin)
     row = _rows(plugin)[0] if _rows(plugin) else None
     _insert(plugin, name="index_scheduling", rpc_func=HANDLER)
@@ -283,9 +261,7 @@ def test_a_project_row_is_reported_free(plugin):
 
 
 def test_while_ownership_is_unresolved_global_rows_read_owned(plugin):
-    """The reload window: answering "free" hands out controls whose writes the
-    next reconcile reverts."""
-    plugin.managed_schedules_ready = False
+    plugin.managed_schedules_collected = False
     _insert(plugin, name="mcp_servers_handler", rpc_func="mcp_servers_handler")
     _insert(plugin, name="anything", rpc_func="x", project_id=2)
 
@@ -295,11 +271,8 @@ def test_while_ownership_is_unresolved_global_rows_read_owned(plugin):
     assert plugin.is_row_protected(proj) is False
 
 
-# --- delete commits (#3) ------------------------------------------------------
 
 def test_delete_actually_removes_the_rows(plugin):
-    """The session helper is closing(...) with no commit, so without one the
-    RPC reports ids deleted that survive the rollback."""
     first = _insert(plugin, name="a", rpc_func="a")
     second = _insert(plugin, name="b", rpc_func="b")
 
@@ -316,11 +289,8 @@ def test_delete_refuses_an_owned_row_and_removes_the_rest(plugin):
     assert [row.id for row in _rows(plugin)] == [owned]
 
 
-# --- canonical ordering (#4) --------------------------------------------------
 
 def test_the_cadence_lands_on_the_oldest_owned_row(plugin):
-    """Reversed, the newest row takes the cadence while the canonical one is
-    parked -- index scheduling silently stops."""
     _own(plugin)
     oldest = _insert(plugin, name="index_scheduling", rpc_func=HANDLER)
     newest = _insert(plugin, name="index_scheduling", rpc_func=HANDLER)
@@ -333,7 +303,6 @@ def test_the_cadence_lands_on_the_oldest_owned_row(plugin):
 
 
 def test_a_project_row_never_receives_the_platform_cadence(plugin):
-    """Unscoped, a project schedule of the same name captures the lookup."""
     _own(plugin)
     project = _insert(
         plugin, name="index_scheduling", rpc_func=HANDLER,
@@ -361,11 +330,8 @@ def test_make_active_picks_the_oldest_and_refuses_owned_names(plugin):
     assert by_id[oldest].active is True
 
 
-# --- the call site, not the helper (#1, #3) ----------------------------------
 
 def test_a_foreign_handler_under_an_owned_name_is_not_reported_owned(plugin):
-    """Without the row's handler at this call site it reports owned: locked,
-    delete-refused, and classified REGISTERED by cleanup -- immortal."""
     _own(plugin)
     _insert(plugin, name="index_scheduling", rpc_func="some_other_registered_rpc")
     row = _rows(plugin)[0]
@@ -377,8 +343,6 @@ def test_a_foreign_handler_under_an_owned_name_is_not_reported_owned(plugin):
 
 
 def test_make_active_never_reaches_a_project_row(plugin):
-    """Unscoped, the lower-id project row captures the lookup and the global
-    schedule is never switched on."""
     project = _insert(
         plugin, name="free", rpc_func="free", project_id=2, active=False,
     )
@@ -391,11 +355,8 @@ def test_make_active_never_reaches_a_project_row(plugin):
     assert by_id[project].active is False
 
 
-# --- collection keeps going past a bad plugin (#2) ---------------------------
 
 def test_one_raising_plugin_does_not_cost_the_others_their_bindings(plugin):
-    """Readiness is set regardless, so an aborted collection leaves the later
-    owners' rows reading unmanaged -- editable, and still overwritten."""
     def _boom():
         raise RuntimeError("this plugin is broken")
 
@@ -413,14 +374,11 @@ def test_one_raising_plugin_does_not_cost_the_others_their_bindings(plugin):
     plugin.collect_managed_schedules()
 
     assert "index_scheduling" in plugin.managed_schedules
-    assert plugin.managed_schedules_ready is True
+    assert plugin.managed_schedules_collected is True
 
 
-# --- refusals must raise, not return (#5, #6) --------------------------------
 
 def test_an_ambiguous_name_raises_rather_than_reporting_no_change(plugin):
-    """The caller reads False as "nothing needed changing", so a return there
-    loses the cadence with only a log line to show for it."""
     _insert(plugin, name="mystery", rpc_func="a")
     _insert(plugin, name="mystery", rpc_func="b")
 
@@ -431,8 +389,6 @@ def test_an_ambiguous_name_raises_rather_than_reporting_no_change(plugin):
 
 
 def test_no_row_on_the_expected_handler_raises_and_writes_nothing(plugin):
-    """Falling back to some row would push the managed cadence onto whatever
-    happens to share the name."""
     _own(plugin)
     _insert(plugin, name="index_scheduling", rpc_func="renamed_by_hand",
             cron="*/40 * * * *")
@@ -443,11 +399,8 @@ def test_no_row_on_the_expected_handler_raises_and_writes_nothing(plugin):
     assert _rows(plugin)[0].cron == "*/40 * * * *"
 
 
-# --- collection survives a malformed binding (#4) ----------------------------
 
 def test_a_malformed_binding_does_not_cost_the_later_plugins_theirs(plugin):
-    """Registration raises on a binding with no handler; narrowing the guard to
-    the collect() call alone lets that abort the loop."""
     plugin.context.module_manager.descriptors = {
         "broken": types.SimpleNamespace(
             module=types.SimpleNamespace(
@@ -468,9 +421,6 @@ def test_a_malformed_binding_does_not_cost_the_later_plugins_theirs(plugin):
 
 
 def test_a_cadence_overwrite_says_what_it_replaced(plugin):
-    """This push is the only writer of a config-owned row and the row is
-    read-only everywhere else, so an operator whose cadence is replaced has
-    nothing but this line to find out from."""
     _own(plugin)
     _insert(plugin, name="index_scheduling", cron="*/30 * * * *",
             rpc_func=HANDLER, active=True)
@@ -483,14 +433,10 @@ def test_a_cadence_overwrite_says_what_it_replaced(plugin):
     )
     assert "cron=%s->%s" in template
     assert "active=%s->%s" in template
-    # Asserted whole: each half can be dropped on its own, and the disable is
-    # the half the upgrade note names as the operator-visible event.
     assert args == ("index_scheduling", "*/30 * * * *", "* * * * *", True, False)
 
 
 def test_an_unchanged_row_logs_nothing(plugin):
-    """Every boot pushes the same config, so logging a no-op write would bury
-    the one line that matters."""
     _own(plugin)
     _insert(plugin, name="index_scheduling", cron="* * * * *",
             rpc_func=HANDLER, active=True)

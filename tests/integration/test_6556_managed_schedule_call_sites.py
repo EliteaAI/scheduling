@@ -1,4 +1,4 @@
-"""Issue #6556 — the guard has to sit on the HTTP path and nowhere else.
+"""The read-only guard has to sit on the HTTP path and nowhere else.
 
 Parsed from source rather than asserted on behaviour because the call sites
 are what regress: a refactor that drops the registry lookup, or one that
@@ -61,12 +61,6 @@ def test_admin_put_returns_409_for_a_managed_row(schedules_api):
     }
     assert 409 in returned_codes
 def test_the_config_write_path_never_refuses():
-    """`scheduling_update_schedule` is how the owning config reaches the row.
-
-    It reads the registry for the expected handler, but must never consult it
-    to reject a write, or the configuration would be locked out of its own
-    schedules.
-    """
     update_schedule = _find_method(_parse("rpc/main.py"), "RPC", "update_schedule")
     refusals = {"is_config_managed", "build_managed_conflict"}
     called = {
@@ -77,17 +71,12 @@ def test_the_config_write_path_never_refuses():
 
 
 def test_the_config_write_path_keeps_a_signature_an_older_caller_can_use():
-    """The expected handler lives in the registry rather than in this
-    signature: a new kwarg would raise TypeError against an older elitea_core,
-    and the caller swallows that, so cadence changes would stop reaching the
-    rows with nothing to say why."""
     update_schedule = _find_method(_parse("rpc/main.py"), "RPC", "update_schedule")
     args = [a.arg for a in update_schedule.args.args if a.arg != "self"]
     assert args == ["name", "cron", "active"]
 
 
 def test_the_registry_is_created_before_init_can_fail():
-    """`init()` does a lot; the API must never meet a missing attribute."""
     init = _find_method(_parse("module.py"), "Module", "__init__")
     assigned = {
         target.attr for node in ast.walk(init)
@@ -99,7 +88,6 @@ def test_the_registry_is_created_before_init_can_fail():
 
 
 def test_registration_is_not_exposed_over_rpc():
-    """An RPC would be answered by an arbitrary replica; the registry is local."""
     rpc_names = {
         arg.value
         for node in ast.walk(_parse("rpc/main.py"))
@@ -122,7 +110,6 @@ def _calls(node, func_name):
 
 
 def _scopes_to_global_rows(node):
-    """`Schedule.project_id.is_(None)` somewhere in this function."""
     return any(
         isinstance(child, ast.Call)
         and isinstance(child.func, ast.Attribute)
@@ -137,13 +124,8 @@ def _scopes_to_global_rows(node):
     "method", ["create_if_not_exists", "make_active", "update_schedule"]
 )
 def test_global_schedule_lookups_exclude_project_rows(method):
-    """Schedule names are not unique. Matching on name alone lets a project
-    row impersonate the platform schedule, so the bootstrap skips creating the
-    real one and reconciliation writes the configured cron onto the project."""
     assert _scopes_to_global_rows(_find_method(_parse("rpc/main.py"), "RPC", method))
 def test_ready_rebuilds_the_registry_from_the_owning_plugins():
-    """A hot reload of this plugin starts with an empty registry and the
-    owners have no reason to push again until their own reconfig."""
     ready = _find_method(_parse("module.py"), "Module", "ready")
     assert any(
         isinstance(child, ast.Call)
@@ -154,8 +136,6 @@ def test_ready_rebuilds_the_registry_from_the_owning_plugins():
 
 
 def test_reconciliation_reads_every_duplicate_global_row():
-    """Names are not unique: looking at only the first row would leave a
-    duplicate ticking at a different cadence, unreachable from either screen."""
     update_schedule = _find_method(_parse("rpc/main.py"), "RPC", "update_schedule")
     terminators = {
         child.func.attr for child in ast.walk(update_schedule)
@@ -166,9 +146,6 @@ def test_reconciliation_reads_every_duplicate_global_row():
 
 
 def test_reconciliation_parks_duplicates_instead_of_activating_them():
-    """The scheduler runs every active row, so applying `active` to all of them
-    would dispatch one tick per duplicate -- and would undo an operator who had
-    deactivated the spare by hand."""
     src = (PLUGIN_ROOT / "rpc" / "main.py").read_text()
     body = src[src.index("def update_schedule"):src.index("def time_to_run")]
     assert "duplicate.active = False" in body
@@ -178,10 +155,6 @@ def test_reconciliation_parks_duplicates_instead_of_activating_them():
 
 
 def test_create_matches_on_the_handler_only_when_asked():
-    """Matching by name alone lets a hand-made row shadow a schedule nobody
-    can repair from the tab -- but making the handler part of the identity for
-    every schedule would insert a duplicate the day an unmanaged one is
-    renamed."""
     create = _find_method(_parse("rpc/main.py"), "RPC", "create_if_not_exists")
     clause_appends = [
         node for node in ast.walk(create)
@@ -199,8 +172,6 @@ def test_create_matches_on_the_handler_only_when_asked():
 
 
 def test_no_matching_row_means_no_write_at_all():
-    """Falling back to an arbitrary row would push this config's cadence onto
-    whatever happens to share the name, on every boot and every save."""
     update_schedule = _find_method(_parse("rpc/main.py"), "RPC", "update_schedule")
 
     assignments = [
@@ -222,14 +193,10 @@ def test_no_matching_row_means_no_write_at_all():
         and isinstance(node.test, ast.Compare)
         and getattr(node.test.left, "id", None) == "schedule"
     )
-    # Raised rather than returned: the caller reads False as "no change".
     assert any(isinstance(stmt, ast.Raise) for stmt in guard.body)
 
 
 def test_ambiguous_name_with_no_registered_owner_writes_nothing():
-    """A replica past init() but before ready() answers with an empty registry,
-    since the RPC is dispatched to an arbitrary node. Choosing the oldest row
-    there lands a platform cadence on whatever happens to share the name."""
     update_schedule = _find_method(_parse("rpc/main.py"), "RPC", "update_schedule")
     guard = next(
         node for node in ast.walk(update_schedule)
@@ -245,8 +212,6 @@ def test_ambiguous_name_with_no_registered_owner_writes_nothing():
 
 
 def test_cleanup_reclaims_surplus_duplicates_of_a_managed_schedule():
-    """Parked, 409'd by the API and refused by delete -- this task is the only
-    thing left that can clear one."""
     cleanup = _find_method(
         _parse("methods/admin_tasks.py"), "Method", "cleanup_orphaned_schedules"
     )
@@ -256,7 +221,6 @@ def test_cleanup_reclaims_surplus_duplicates_of_a_managed_schedule():
         and node.func.id == "plan_cleanup"
         for node in ast.walk(cleanup)
     ), "cleanup does not delegate to the tested planner"
-    # The wording lives with the verdicts now, not in this loop.
     from importlib.util import module_from_spec, spec_from_file_location
     spec = spec_from_file_location(
         "ms", PLUGIN_ROOT / "utils" / "managed_schedules.py"
@@ -271,14 +235,10 @@ def _module_method(name):
 
 
 def test_the_reload_window_treats_global_rows_as_owned():
-    """init_api() runs in init(); the registry fills at the end of ready(). A
-    hot reload leaves every surface live in between, and answering "unmanaged"
-    there hands out controls whose writes the next reconcile reverts."""
     guard = next(
         node for node in ast.walk(_module_method("managed_binding_for"))
         if isinstance(node, ast.If)
     )
-    # Polarity: the marker is returned while NOT ready, not once ready.
     assert any(
         isinstance(child, ast.UnaryOp) and isinstance(child.op, ast.Not)
         for child in ast.walk(guard.test)
@@ -291,9 +251,6 @@ def test_the_reload_window_treats_global_rows_as_owned():
 
 
 def test_readiness_is_set_unconditionally_and_always():
-    """Keyed on the registry being non-empty it would lock a deployment with no
-    config-owned schedules out forever; left off a failure path it would lock
-    every deployment out for the life of the process."""
     collect = _module_method("collect_managed_schedules")
 
     tries = [node for node in collect.body if isinstance(node, ast.Try)]
@@ -303,7 +260,7 @@ def test_readiness_is_set_unconditionally_and_always():
         stmt for stmt in tries[0].finalbody
         if isinstance(stmt, ast.Assign)
         and any(
-            isinstance(t, ast.Attribute) and t.attr == "managed_schedules_ready"
+            isinstance(t, ast.Attribute) and t.attr == "managed_schedules_collected"
             for t in stmt.targets
         )
     ]
@@ -315,12 +272,11 @@ def test_readiness_is_set_unconditionally_and_always():
     )
     assert finally_assigns[0].value.value is True
 
-    # And nowhere else, conditionally or otherwise.
     all_assigns = [
         node for node in ast.walk(collect)
         if isinstance(node, ast.Assign)
         and any(
-            isinstance(t, ast.Attribute) and t.attr == "managed_schedules_ready"
+            isinstance(t, ast.Attribute) and t.attr == "managed_schedules_collected"
             for t in node.targets
         )
     ]
@@ -328,8 +284,6 @@ def test_readiness_is_set_unconditionally_and_always():
 
 
 def test_descriptor_iteration_is_snapshotted():
-    """A concurrent reload_plugin mutates the mapping; the RuntimeError would
-    escape ready() unlogged and leave readiness False for good."""
     collect = _module_method("collect_managed_schedules")
     assert any(
         isinstance(node, ast.Call)
@@ -349,12 +303,6 @@ def test_descriptor_iteration_is_snapshotted():
     ],
 )
 def test_every_non_owner_path_uses_the_shared_protected_state(path, cls, method, helper):
-    """Consulting the registry directly skips the unresolved-ownership case,
-    which is how the listing and the edit came to disagree.
-
-    cleanup is not here: it refuses to run at all while ownership is
-    unresolved, because its branch deletes rather than protects.
-    """
     node = _find_method(_parse(path), cls, method)
     assert any(
         isinstance(child, ast.Call)
@@ -365,8 +313,6 @@ def test_every_non_owner_path_uses_the_shared_protected_state(path, cls, method,
 
 
 def test_the_owner_write_path_is_exempt():
-    """Blocking it during the window would stall the reconcile that keeps
-    these rows correct."""
     update_schedule = _find_method(_parse("rpc/main.py"), "RPC", "update_schedule")
     assert not any(
         isinstance(child, ast.Attribute)
@@ -376,7 +322,6 @@ def test_the_owner_write_path_is_exempt():
 
 
 def test_put_refuses_when_owned_not_when_free():
-    """Inverted, unmanaged rows 409 while the config-owned ones edit freely."""
     put = _find_method(_parse("api/v2/schedules.py"), "AdminAPI", "put")
     guard = next(
         node for node in ast.walk(put)
@@ -395,7 +340,6 @@ def test_put_refuses_when_owned_not_when_free():
 
 
 def test_delete_refuses_the_owned_rows_not_the_free_ones():
-    """Inverted, it removes exactly the rows it exists to protect."""
     delete = _find_method(_parse("rpc/main.py"), "RPC", "delete_schedules")
     comprehensions = [
         node for node in ast.walk(delete)
@@ -404,12 +348,10 @@ def test_delete_refuses_the_owned_rows_not_the_free_ones():
     assert len(comprehensions) == 2, "the protect/delete split is no longer two passes"
 
     protected, deleted = comprehensions
-    # Protected set: rows where the predicate holds, un-negated.
     guard = protected.generators[0].ifs[0]
     assert isinstance(guard, ast.Call)
     assert guard.func.attr == "is_row_protected"
 
-    # Deleted set: the complement, never the same set.
     exclusion = deleted.generators[0].ifs[0]
     assert isinstance(exclusion, ast.Compare)
     assert isinstance(exclusion.ops[0], ast.NotIn), ast.dump(exclusion)
@@ -417,8 +359,6 @@ def test_delete_refuses_the_owned_rows_not_the_free_ones():
 
 
 def test_make_active_refuses_when_protected_not_when_free():
-    """Inverted, it flips the config-owned row behind the configuration's
-    back, which is the whole reason the refusal exists."""
     make_active = _find_method(_parse("rpc/main.py"), "RPC", "make_active")
     guard = next(
         node for node in ast.walk(make_active)
@@ -436,8 +376,6 @@ def test_make_active_refuses_when_protected_not_when_free():
 
 
 def test_cleanup_will_not_run_while_ownership_is_unresolved():
-    """It deletes rows. With an empty registry canonical_ids is empty and the
-    pending marker claims every global row, so every row lands in orphaned."""
     cleanup = _find_method(
         _parse("methods/admin_tasks.py"), "Method", "cleanup_orphaned_schedules"
     )
@@ -446,13 +384,12 @@ def test_cleanup_will_not_run_while_ownership_is_unresolved():
         if isinstance(node, ast.If)
         and isinstance(node.test, ast.UnaryOp)
         and isinstance(node.test.op, ast.Not)
-        and getattr(node.test.operand, "attr", None) == "managed_schedules_ready"
+        and getattr(node.test.operand, "attr", None) == "managed_schedules_collected"
     )
     assert any(isinstance(stmt, ast.Return) for stmt in guard.body)
 
 
 def test_make_active_orders_before_it_picks():
-    """Without it the row chosen depends on whatever the database returns."""
     make_active = _find_method(_parse("rpc/main.py"), "RPC", "make_active")
     assert any(
         isinstance(node, ast.Call)
@@ -463,8 +400,6 @@ def test_make_active_orders_before_it_picks():
 
 
 def test_the_window_gate_only_claims_global_rows():
-    """Without the project_id conjunct every project row 409s during the
-    window, for schedules no configuration can ever own."""
     binding_for = _module_method("managed_binding_for")
     guard = next(node for node in ast.walk(binding_for) if isinstance(node, ast.If))
     assert isinstance(guard.test, ast.BoolOp) and isinstance(guard.test.op, ast.And)
@@ -476,15 +411,11 @@ def test_the_window_gate_only_claims_global_rows():
 
 
 def test_the_listing_has_no_second_route_to_the_resolver():
-    """A direct call would skip the unresolved-ownership case again."""
     src = (PLUGIN_ROOT / "api" / "v2" / "schedules.py").read_text()
     assert "resolve_managed_binding" not in src
 
 
 def test_cleanup_delegates_its_whole_decision_to_the_tested_planner():
-    """Expressed inline, "delete this" reads almost identically to the checks
-    that mean "protect this", and a one-character inversion sweeps the table
-    with the suite still green."""
     cleanup = _find_method(
         _parse("methods/admin_tasks.py"), "Method", "cleanup_orphaned_schedules"
     )
@@ -498,15 +429,11 @@ def test_cleanup_delegates_its_whole_decision_to_the_tested_planner():
         and node.func.id == "plan_cleanup"
         for node in ast.walk(cleanup)
     )
-    # Grouping and canonical selection decide what counts as surplus, so they
-    # belong to the tested planner, not to this loop.
     for leaked in ("canonical_ids", "by_name", "resolve_managed_handler"):
         assert leaked not in src, leaked
 
 
 def test_collection_runs_before_anything_that_can_raise_in_ready():
-    """A raise from the thread start escapes into pylon's bare except, leaving
-    the registry uncollected and every guarded write refused for good."""
     ready = _module_method("ready")
     collect_line = min(
         child.lineno for child in ast.walk(ready)
@@ -522,8 +449,6 @@ def test_collection_runs_before_anything_that_can_raise_in_ready():
 
 
 def test_the_delete_list_is_built_from_the_shared_verdict_set():
-    """Dispatching verdict-by-verdict inline let both `orphaned.append` calls
-    be removed with the suite green."""
     cleanup = _find_method(
         _parse("methods/admin_tasks.py"), "Method", "cleanup_orphaned_schedules"
     )
@@ -546,8 +471,6 @@ def test_the_delete_list_is_built_from_the_shared_verdict_set():
 
 
 def test_creation_identity_comes_from_the_payload_not_the_registry():
-    """Per-process state made this replica-dependent: one that had not
-    collected matched on name alone and declined to create the real row."""
     create = _find_method(_parse("rpc/main.py"), "RPC", "create_if_not_exists")
     guard = next(
         node for node in ast.walk(create)

@@ -1,4 +1,4 @@
-"""Issue #6556 — which schedules the platform configuration owns, and what it says.
+"""Which schedules the platform configuration owns, and what the refusal says.
 
 `index_scheduling` and `pipeline_scheduling` take their cadence from the
 elitea_core plugin configuration, which is re-pushed on every boot and
@@ -48,8 +48,6 @@ def test_a_global_schedule_matching_a_binding_is_managed():
 
 
 def test_a_project_schedule_of_the_same_name_is_not_managed():
-    """Schedule names are not unique and bindings only ever describe global
-    rows, so a project's own `index_scheduling` belongs to the project."""
     registry = {"index_scheduling": ENTRY}
     assert managed_schedules.resolve_managed_binding(
         registry, "index_scheduling", 2
@@ -57,7 +55,6 @@ def test_a_project_schedule_of_the_same_name_is_not_managed():
 
 
 def test_project_zero_is_still_a_project():
-    """`if project_id:` would wrongly treat project 0 as global."""
     registry = {"index_scheduling": ENTRY}
     assert managed_schedules.resolve_managed_binding(
         registry, "index_scheduling", 0
@@ -86,12 +83,6 @@ class _Row:
 
 
 def test_only_rows_on_the_expected_handler_are_driven():
-    """A row that merely borrows the name is neither driven nor parked.
-
-    Parking it would force Active off on every reconcile while the listing
-    reports it unmanaged and the tab offers a live switch -- the operator sets
-    it, a restart silently unsets it. That is #6556's own complaint.
-    """
     rows = [_Row(3, "hand_made"), _Row(9, "applications_check_index_scheduling")]
     driven, parked = managed_schedules.plan_reconciliation(
         rows, "applications_check_index_scheduling"
@@ -108,9 +99,6 @@ def test_duplicates_on_the_same_handler_are_parked():
 
 
 def test_an_unknown_handler_drives_the_oldest_and_parks_nothing():
-    """No configuration owns the name -- an ordinary schedule, or a replica
-    whose registry has not been populated yet. Deactivating rows on a name
-    match alone is the same mistake from the other side."""
     rows = [_Row(3, "whatever"), _Row(9, "something_else")]
     driven, parked = managed_schedules.plan_reconciliation(rows, None)
     assert driven.id == 3
@@ -118,15 +106,11 @@ def test_an_unknown_handler_drives_the_oldest_and_parks_nothing():
 
 
 def test_no_row_on_the_expected_handler_drives_nothing():
-    """Better to push nowhere than to push this config's cadence onto an
-    unrelated row every boot."""
     rows = [_Row(3, "hand_made"), _Row(9, "also_wrong")]
     assert managed_schedules.plan_reconciliation(rows, "expected") == (None, [])
 
 
 def test_handler_is_resolved_from_the_registry():
-    """Kept in the registry rather than passed to scheduling_update_schedule,
-    so that RPC's signature stays callable by an older elitea_core."""
     registry = {"index_scheduling": ENTRY}
     assert managed_schedules.resolve_managed_handler(registry, "index_scheduling") == (
         "applications_check_index_scheduling"
@@ -135,13 +119,11 @@ def test_handler_is_resolved_from_the_registry():
 
 
 class _Registry:
-    """The registry half of the scheduling module, without importing pylon."""
-
     def __init__(self):
         self.managed_schedules = {}
         self._managed_owners = {}
 
-    register_managed_schedules = None  # bound below
+    register_managed_schedules = None
 
 
 def _make_registry():
@@ -157,8 +139,6 @@ def _make_registry():
 
 
 def test_registering_an_owner_replaces_its_previous_bindings():
-    """A plugin that drops a binding must release the row, or it stays locked
-    against a configuration that no longer drives it."""
     registry = _make_registry()
     registry.register_managed_schedules("elitea_core", {
         "index_scheduling": ENTRY,
@@ -179,8 +159,6 @@ def test_owners_do_not_release_each_others_bindings():
 
 
 def test_a_row_borrowing_a_managed_name_is_not_managed():
-    """Otherwise it is immortal: skipped by orphan cleanup, refused by delete
-    and 409'd by the admin API, leaving SQL as the only way to remove it."""
     registry = {"index_scheduling": ENTRY}
     assert not managed_schedules.is_config_managed(
         registry, "index_scheduling", None, "hand_made_wrong_rpc"
@@ -191,14 +169,11 @@ def test_a_row_borrowing_a_managed_name_is_not_managed():
 
 
 def test_a_caller_with_no_row_in_hand_still_gets_protection():
-    """`rpc_func` is optional only for callers that have no row to check."""
     registry = {"index_scheduling": ENTRY}
     assert managed_schedules.is_config_managed(registry, "index_scheduling", None)
 
 
 def test_a_malformed_binding_set_releases_nothing():
-    """Popping the old claims before the replacement is built would leave rows
-    unlocked while the reconcile still overwrites them -- failing open."""
     registry = _make_registry()
     registry.register_managed_schedules("elitea_core", {"index_scheduling": ENTRY})
     try:
@@ -209,8 +184,6 @@ def test_a_malformed_binding_set_releases_nothing():
 
 
 def test_listing_and_enforcement_agree_on_a_stray_row():
-    """The binding the listing reports is the same decision the write paths
-    make, so a row cannot render locked while the API would accept a write."""
     registry = {"index_scheduling": ENTRY}
     stray = ("index_scheduling", None, "hand_made_wrong_rpc")
     real = ("index_scheduling", None, "applications_check_index_scheduling")
@@ -223,9 +196,6 @@ def test_listing_and_enforcement_agree_on_a_stray_row():
 
 
 def test_a_binding_without_a_handler_is_refused_at_registration():
-    """It could not say which row it owns, so it would claim every row of the
-    name while reconciliation drove only one -- locked and never reconciled,
-    repairable only by SQL."""
     registry = _make_registry()
     registry.register_managed_schedules("elitea_core", {"index_scheduling": ENTRY})
     try:
@@ -240,42 +210,33 @@ def test_a_binding_without_a_handler_is_refused_at_registration():
 
 
 def test_make_active_and_delete_agree_on_what_they_refuse():
-    """Both flip or remove state the configuration owns, so both ask."""
     src = (Path(__file__).parents[2] / "rpc" / "main.py").read_text()
     for name, nxt in (
         ("def make_active", "@web.rpc('scheduling_update_schedule')"),
         ("def delete_schedules", "@web.rpc('get_schedules')"),
     ):
         body = src[src.index(name):src.index(nxt)]
-        # Either granularity is fine; refusing is not optional.
         assert "is_row_protected" in body or "is_name_protected" in body, name
 
 
 def test_a_managed_name_is_refused_whichever_row_would_be_picked():
-    """make_active names a schedule without saying which row it means. Picking
-    the lowest id and checking that would wave through a namesake on a foreign
-    handler while never examining the owned row."""
     registry = {"index_scheduling": ENTRY}
     assert managed_schedules.is_managed_name(registry, "index_scheduling")
     assert not managed_schedules.is_managed_name(registry, "mcp_servers_handler")
 
 
 def test_make_active_refuses_before_it_reads_a_row():
-    """The row-level check could only run after a row was chosen, which is the
-    choice that was wrong."""
     src = (Path(__file__).parents[2] / "rpc" / "main.py").read_text()
     body = src[src.index("def make_active"):src.index("@web.rpc('scheduling_update_schedule')")]
     assert body.index("is_name_protected") < body.index("session.query")
 
 
 def test_an_unknown_owner_with_one_row_still_updates_it():
-    """The common case: an ordinary schedule with a single global row."""
     rows = [_Row(3, "whatever")]
     driven, parked = managed_schedules.plan_reconciliation(rows, None)
     assert driven.id == 3 and parked == []
 
 
-# --- what the orphan cleanup will DELETE -------------------------------------
 
 REGISTRY = {"index_scheduling": ENTRY}
 REGISTERED_RPCS = {"applications_check_index_scheduling", "mcp_servers_handler"}
@@ -298,9 +259,6 @@ def test_a_second_row_on_the_owned_handler_is_surplus():
 
 
 def test_an_ordinary_schedule_is_never_surplus():
-    """The inversion that matters: an unmanaged name resolves to no handler,
-    so `!=` makes every ordinary row surplus and one non-dry run empties the
-    table."""
     row = _Row(4, "mcp_servers_handler", name="mcp_servers_handler")
     assert _classify(row) == managed_schedules.REGISTERED
 
@@ -331,9 +289,6 @@ def test_a_project_row_is_never_surplus():
 
 
 def test_a_name_carries_no_pending_state():
-    """make_active's caller activates once during startup and discards the
-    result, so any blanket refusal while the registry is empty -- however it is
-    spelled -- leaves its schedule off for good."""
     import ast
     tree = ast.parse((Path(__file__).parents[2] / "module.py").read_text())
     method = next(
@@ -349,7 +304,6 @@ def test_a_name_carries_no_pending_state():
     assert statements[0].value.func.id == "is_managed_name"
 
 
-# --- the whole cleanup decision, over a table shaped like the live one --------
 
 def _live_table():
     return [
@@ -389,8 +343,6 @@ def test_a_healthy_table_loses_only_the_genuinely_unregistered_row():
 
 
 def test_the_config_owned_rows_are_never_orphaned():
-    """The failure this guards: both drop out of canonical selection, classify
-    SURPLUS, and one live run deletes exactly the protected rows."""
     orphans = _orphans(_live_table())
     assert 12 not in orphans and 23 not in orphans
 
@@ -401,8 +353,6 @@ def test_a_duplicate_is_orphaned_and_the_oldest_kept():
 
 
 def test_a_project_row_sharing_a_managed_name_is_not_canonical():
-    """Its id is lower, so folded into the grouping it wins canonical and the
-    real global row becomes surplus -- deleted on the next live run."""
     rows = [
         _Row(5, "applications_check_index_scheduling", project_id=2),
     ] + _live_table()
@@ -412,13 +362,10 @@ def test_a_project_row_sharing_a_managed_name_is_not_canonical():
 
 
 def test_an_empty_registry_orphans_only_unregistered_handlers():
-    """The window case: nothing is canonical, so nothing may be surplus."""
     assert _orphans(_live_table(), registry={}) == [15]
 
 
 def test_only_surplus_and_orphan_verdicts_delete():
-    """The loop builds its delete list from this set, so a verdict slipping in
-    or out of it changes what a live run removes."""
     assert managed_schedules.ORPHANING_VERDICTS == frozenset({
         managed_schedules.SURPLUS, managed_schedules.ORPHAN,
     })
@@ -427,7 +374,6 @@ def test_only_surplus_and_orphan_verdicts_delete():
 
 
 def test_every_verdict_has_a_reason_to_log():
-    """A missing key would raise mid-sweep, after some rows were classified."""
     for verdict in (
         managed_schedules.CANONICAL, managed_schedules.SURPLUS,
         managed_schedules.REGISTERED, managed_schedules.ORPHAN,
@@ -436,10 +382,6 @@ def test_every_verdict_has_a_reason_to_log():
 
 
 def test_canonical_does_not_depend_on_the_order_it_is_given():
-    """The query behind this has no ORDER BY and Postgres heap order reshuffles
-    after an UPDATE, while the cleanup planner sorts separately -- so trusting
-    the caller lets the two disagree and one sweep deletes the row the other is
-    driving."""
     newest = _Row(9, "the_handler")
     oldest = _Row(3, "the_handler")
 

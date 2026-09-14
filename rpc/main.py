@@ -19,12 +19,7 @@ from tools import db
 class RPC:
     @web.rpc('scheduling_delete_schedules')
     def delete_schedules(self, delete_ids: List[int]) -> List[int]:
-        """ Delete schedules by id, refusing the ones a plugin config owns
-
-        Deleting a managed row leaves its configuration pointing at nothing
-        until the next successful bootstrap, and no caller has a reason to:
-        the owning plugin withdraws a schedule by unregistering it.
-        """
+        """ Delete schedules by id, refusing the ones a plugin config owns """
         with db.with_project_schema_session(None) as session:
             schedules = session.query(Schedule).where(
                 Schedule.id.in_(delete_ids)
@@ -64,12 +59,7 @@ class RPC:
 
     @web.rpc('scheduling_create_if_not_exists', 'create_if_not_exists')
     def create_if_not_exists(self, schedule_data: dict) -> ScheduleModelPD:
-        """ Create a platform schedule unless it already exists
-
-        Scoped to global rows: ``ScheduleModelPD`` carries no project_id, so
-        this can only ever create one, and schedule names are not unique. A
-        project row of the same name must not be mistaken for it.
-        """
+        """ Create a global platform schedule unless it already exists """
         match_handler = bool(schedule_data.get('match_handler'))
         with db.with_project_schema_session(None) as session:
             pd = ScheduleModelPD.parse_obj(schedule_data)
@@ -78,16 +68,6 @@ class RPC:
                 Schedule.project_id.is_(None),
             ]
             if match_handler:
-                # Asked for by the caller rather than read from the registry,
-                # so every replica answers the same way. Consulting per-process
-                # state here meant a replica whose ready() had not run matched
-                # on name alone, declined to create the real row, and left the
-                # reconcile on a populated replica raising for a row that never
-                # gets made.
-                #
-                # Only owners ask: for an ordinary schedule the name stays the
-                # identity, since adding the handler would insert a second row
-                # the day one is renamed.
                 clauses.append(Schedule.rpc_func == pd.rpc_func)
             bd_schedule = session.query(Schedule).where(*clauses).first()
             if bd_schedule:
@@ -100,27 +80,12 @@ class RPC:
 
     @web.rpc()
     def make_active(self, schedule_name, value=True):
-        """ Flip a global schedule's active flag
-
-        Refused for any name a configuration owns, for the same reason delete
-        is: flipping one behind the configuration's back leaves the tab showing
-        a read-only row that disagrees with the setting driving it. The refusal
-        is by name because the caller names a schedule without saying which row
-        it means -- picking one and checking it would wave through a namesake on
-        a foreign handler while never examining the owned row.
-
-        Returns whether the call was applied. False means the name is owned by
-        a configuration and always will be -- not a transient condition to
-        retry. While the registry is still being collected nothing is refused,
-        so a call landing in that window can flip a config-owned row until the
-        next reconcile puts it back; see is_name_protected for why that trade
-        is the right way round.
-        """
+        """ Flip a global schedule's active flag, unless a configuration owns the name """
         if self.is_name_protected(schedule_name):
             log.warning(
                 "make_active: refusing schedule name=%s (ownership %s)",
                 schedule_name,
-                "resolved" if self.managed_schedules_ready else "still resolving",
+                "resolved" if self.managed_schedules_collected else "still resolving",
             )
             return False
         with db.with_project_schema_session(None) as session:
@@ -135,15 +100,9 @@ class RPC:
 
     @web.rpc('scheduling_update_schedule')
     def update_schedule(self, name: str, cron: str = None, active: bool = None) -> bool:
-        """Update an existing schedule's cron and/or active flag in place.
+        """ Update a global schedule in place
 
-        Returns True if any field changed, False otherwise (including row not
-        found and invalid cron). Either field can be omitted to leave it
-        unchanged.
-
-        Raises when the row to write cannot be identified at all, so the owner
-        logs a failure instead of reading a False as "nothing needed changing"
-        and leaving its configuration silently unapplied.
+        True if anything changed; raises when the row cannot be identified.
         """
         if cron is not None:
             try:
@@ -162,29 +121,14 @@ class RPC:
             if not schedules:
                 log.warning("update_schedule: schedule not found name=%s", name)
                 return False
-            # Names are not unique, so a race or a manual repair can leave
-            # duplicates. The scheduler runs every active row independently, so
-            # one row becomes canonical and the rest are parked: activating
-            # them all would dispatch one tick per duplicate.
             expected = resolve_managed_handler(self.managed_schedules, name)
             if expected is None and len(schedules) > 1:
-                # This process does not know who owns the name -- an ordinary
-                # schedule, or a replica past init() whose ready() has not run
-                # yet, since the RPC is dispatched to an arbitrary node. With
-                # more than one candidate there is nothing to choose on, and
-                # guessing lands the write on whichever row happens to be
-                # oldest.
-                # Raised, not returned False: the caller reads that as "no
-                # change" and moves on, so a cadence push would vanish with
-                # nothing but this line while Runtime shows the new value.
                 raise RuntimeError(
                     f"ambiguous schedule name with no registered owner: "
                     f"name={name} ids={[item.id for item in schedules]}"
                 )
             schedule, duplicates = plan_reconciliation(schedules, expected)
             if schedule is None:
-                # Driving an unrelated row would push this config's cadence
-                # onto whatever happens to share the name, every boot.
                 raise RuntimeError(
                     f"no schedule row calls the expected handler: name={name} "
                     f"expected={expected} ids={[item.id for item in schedules]}"
@@ -197,7 +141,7 @@ class RPC:
                     [item.id for item in duplicates],
                 )
             changed = False
-            previous = (schedule.cron, schedule.active)
+            previous_cron, previous_active = schedule.cron, schedule.active
             if cron is not None and schedule.cron != cron:
                 schedule.cron = cron
                 changed = True
@@ -210,14 +154,10 @@ class RPC:
                     changed = True
             if changed:
                 session.commit()
-                # Previous values included so an overwrite is attributable:
-                # this push is the only thing that writes a config-owned row,
-                # and the row is read-only everywhere else, so without the old
-                # cadence here there is nothing to say what it replaced.
                 log.info(
                     "update_schedule: name=%s cron=%s->%s active=%s->%s",
-                    name, previous[0], schedule.cron,
-                    previous[1], schedule.active,
+                    name, previous_cron, schedule.cron,
+                    previous_active, schedule.active,
                 )
             return changed
 

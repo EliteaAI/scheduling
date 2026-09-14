@@ -16,8 +16,6 @@ from pathlib import Path
 
 
 def install_stubs():
-    """Install minimal stubs to prevent ImportError on pylon/tools imports."""
-
     pylon_stub = types.ModuleType('pylon')
     pylon_core = types.ModuleType('pylon.core')
     pylon_core_tools = types.ModuleType('pylon.core.tools')

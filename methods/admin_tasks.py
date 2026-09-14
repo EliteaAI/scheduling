@@ -49,12 +49,6 @@ class Method:  # pylint: disable=E1101,R0903,W0201
         remote node would appear missing — this is intentional: a function with
         no local handler is effectively dead in a single-pylon setup.
 
-        This is the one path that removes a config-owned row: a surplus
-        duplicate is parked by reconciliation, 409'd by the admin API and
-        refused by delete, so nothing else can clear one. The canonical row is
-        never touched, and the task refuses to run at all while ownership is
-        unresolved.
-
         Supports an optional ``task=<name>`` param to target a single schedule
         by name instead of scanning all rows.
 
@@ -93,9 +87,7 @@ class Method:  # pylint: disable=E1101,R0903,W0201
         registered_rpcs = set(self.context.rpc_manager.node.service_node.services.keys())
         log.info("%sRegistered RPC functions: %d", prefix, len(registered_rpcs))
 
-        if not self.managed_schedules_ready:
-            # This task deletes rows, and while ownership is unresolved every
-            # global row looks the same: neither canonical nor clearly a stray.
+        if not self.managed_schedules_collected:
             log.warning(
                 "%sSchedule ownership is still being resolved; refusing to run",
                 prefix,

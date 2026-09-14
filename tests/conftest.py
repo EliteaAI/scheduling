@@ -7,13 +7,11 @@ PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 @pytest.fixture(scope="session")
 def plugin_root() -> pathlib.Path:
-    """Absolute path to the scheduling plugin root."""
     return PLUGIN_ROOT
 
 
 @pytest.fixture(scope="session")
 def utils_path(plugin_root: pathlib.Path) -> pathlib.Path:
-    """Path to the utils/ directory."""
     return plugin_root / "utils"
 
 
