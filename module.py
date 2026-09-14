@@ -34,6 +34,11 @@ from tools import config as c
 from tools import this
 
 from .models.schedule import Schedule
+from .utils.managed_schedules import (
+    PENDING_BINDING,
+    is_managed_name,
+    resolve_managed_binding,
+)
 
 
 class Module(module.ModuleModel):
@@ -43,6 +48,9 @@ class Module(module.ModuleModel):
         self.context = context
         self.descriptor = descriptor
         self.thread = None
+        self.managed_schedules = {}
+        self._managed_owners = {}
+        self.managed_schedules_collected = False
 
     def init(self):
         """ Init module """
@@ -79,6 +87,8 @@ class Module(module.ModuleModel):
 
     def ready(self):
         """ Ready callback """
+        self.collect_managed_schedules()
+
         log.info("Starting scheduling thread")
         self.thread.start()
         try:
@@ -88,6 +98,59 @@ class Module(module.ModuleModel):
             )
         except Exception:  # pylint: disable=W0703
             log.exception("Failed to register scheduling admin tasks")
+
+    def collect_managed_schedules(self) -> None:
+        """ Rebuild the managed-schedule registry from the owning plugins """
+        try:
+            descriptors_snapshot = list(
+                self.context.module_manager.descriptors.items()
+            )
+            for name, descriptor in descriptors_snapshot:
+                module = getattr(descriptor, "module", None)
+                collect = getattr(module, "get_managed_schedules", None)
+                if collect is None:
+                    continue
+                try:
+                    self.register_managed_schedules(name, collect())
+                except Exception:  # pylint: disable=W0703
+                    log.exception("Failed to collect managed schedules from %s", name)
+        finally:
+            self.managed_schedules_collected = True
+
+    def managed_binding_for(self, schedule):
+        """ The configuration owning this row, or a marker while unresolved """
+        if schedule.project_id is None and not self.managed_schedules_collected:
+            return PENDING_BINDING
+        return resolve_managed_binding(
+            self.managed_schedules, schedule.name,
+            schedule.project_id, schedule.rpc_func,
+        )
+
+    def is_row_protected(self, schedule) -> bool:
+        return self.managed_binding_for(schedule) is not None
+
+    def is_name_protected(self, name: str) -> bool:
+        return is_managed_name(self.managed_schedules, name)
+
+    def register_managed_schedules(self, owner: str, bindings: dict) -> None:
+        """ Declare which schedules a plugin's admin configuration owns """
+        replacement = {
+            name: {
+                'managed_by': entry['managed_by'],
+                'rpc_func': entry['rpc_func'],
+            }
+            for name, entry in bindings.items()
+        }
+        for name in self._managed_owners.get(owner, set()) - set(replacement):
+            self.managed_schedules.pop(name, None)
+            log.info("Managed schedule released: name=%s owner=%s", name, owner)
+        self._managed_owners[owner] = set(replacement)
+        for name, entry in replacement.items():
+            self.managed_schedules[name] = entry
+            log.info(
+                "Managed schedule registered: name=%s owner=%s rpc_func=%s",
+                name, owner, entry['rpc_func'],
+            )
 
     def deinit(self):  # pylint: disable=R0201
         """ De-init module """

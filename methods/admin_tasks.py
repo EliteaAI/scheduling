@@ -23,6 +23,11 @@ from pylon.core.tools import log  # pylint: disable=E0611,E0401
 from pylon.core.tools import web  # pylint: disable=E0611,E0401
 
 from ..models.schedule import Schedule
+from ..utils.managed_schedules import (
+    ORPHANING_VERDICTS,
+    VERDICT_REASONS,
+    plan_cleanup,
+)
 
 
 class Method:  # pylint: disable=E1101,R0903,W0201
@@ -82,6 +87,13 @@ class Method:  # pylint: disable=E1101,R0903,W0201
         registered_rpcs = set(self.context.rpc_manager.node.service_node.services.keys())
         log.info("%sRegistered RPC functions: %d", prefix, len(registered_rpcs))
 
+        if not self.managed_schedules_collected:
+            log.warning(
+                "%sSchedule ownership is still being resolved; refusing to run",
+                prefix,
+            )
+            return
+
         orphaned = []
         checked = 0
 
@@ -91,19 +103,19 @@ class Method:  # pylint: disable=E1101,R0903,W0201
                 query = query.filter(Schedule.name == task_filter)
             schedules = query.all()
 
-            for sc in schedules:
+            plan = plan_cleanup(
+                schedules, self.managed_schedules, registered_rpcs,
+            )
+            for sc, verdict in plan:
                 checked += 1
-                if sc.rpc_func in registered_rpcs:
-                    log.info(
-                        "%sschedule id=%s name=%s rpc_func=%s: registered, skipping",
-                        prefix, sc.id, sc.name, sc.rpc_func,
-                    )
-                else:
-                    log.info(
-                        "%sschedule id=%s name=%s rpc_func=%s: NOT registered — ORPHANED",
-                        prefix, sc.id, sc.name, sc.rpc_func,
-                    )
-                    orphaned.append({"id": sc.id, "name": sc.name, "rpc_func": sc.rpc_func})
+                log.info(
+                    "%sschedule id=%s name=%s rpc_func=%s: %s",
+                    prefix, sc.id, sc.name, sc.rpc_func, VERDICT_REASONS[verdict],
+                )
+            orphaned = [
+                {"id": sc.id, "name": sc.name, "rpc_func": sc.rpc_func}
+                for sc, verdict in plan if verdict in ORPHANING_VERDICTS
+            ]
 
             if not dry_run and orphaned:
                 orphan_ids = [o["id"] for o in orphaned]
