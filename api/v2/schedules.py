@@ -9,6 +9,8 @@ from ...models.schedule import Schedule
 from ...utils.managed_schedules import build_managed_conflict
 from tools import auth
 
+RUN_NOW_TIMEOUT = 30
+
 
 class ProjectAPI(api_tools.APIModeHandler):
     @auth.decorators.check_api(["configuration.scheduling.schedules.view"])
@@ -75,6 +77,18 @@ class AdminAPI(api_tools.APIModeHandler):
             ).update(changes)
             session.commit()
         return None, 204
+
+    @auth.decorators.check_api(["configuration.scheduling.schedules.edit"])
+    def post(self, **kwargs):
+        schedule_id = (request.json or {}).get('id')
+        if schedule_id is None:
+            return {'error': 'id is required'}, 400
+        schedule = Schedule.query.filter(Schedule.id == schedule_id).first()
+        if not schedule:
+            return {'error': f'Schedule {schedule_id} not found'}, 404
+        if schedule.run_now(timeout=RUN_NOW_TIMEOUT):
+            return {'ok': True, 'last_run': schedule.last_run.isoformat()}, 200
+        return {'error': f'{schedule.rpc_func} did not respond within {RUN_NOW_TIMEOUT}s'}, 504
 
 
 class API(api_tools.APIBase):

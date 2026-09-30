@@ -63,7 +63,15 @@ class Schedule(db_tools.AbstractBaseMixin, rpc_tools.RpcMixin, db.Base):
         if debug:
             log.info('')
 
-    def _run_traced(self, tracer):
+    def run_now(self, timeout=5) -> bool:
+        """ Run the schedule immediately, ignoring its cron timing """
+        log.info('Manual run: Schedule(id=%s, name=%s)', self.id, self.name)
+        tracer = self._get_tracer()
+        if tracer:
+            return self._run_traced(tracer, timeout)
+        return self._run_untraced(timeout)
+
+    def _run_traced(self, tracer, timeout=5) -> bool:
         """ Execute schedule RPC with OTEL tracing span """
         from opentelemetry.trace import SpanKind, Status, StatusCode  # pylint: disable=C0415
         #
@@ -86,7 +94,7 @@ class Schedule(db_tools.AbstractBaseMixin, rpc_tools.RpcMixin, db.Base):
             try:
                 self.rpc.call_function_with_timeout(
                     func=self.rpc_func,
-                    timeout=5,
+                    timeout=timeout,
                     **self.rpc_kwargs
                 )
                 duration_ms = (time_module.perf_counter() - start) * 1000
@@ -94,21 +102,25 @@ class Schedule(db_tools.AbstractBaseMixin, rpc_tools.RpcMixin, db.Base):
                 span.set_status(Status(StatusCode.OK))
                 self.last_run = datetime.now()
                 self.commit()
+                return True
             except Empty:
                 duration_ms = (time_module.perf_counter() - start) * 1000
                 span.set_attribute('schedule.duration_ms', duration_ms)
                 span.set_status(Status(StatusCode.ERROR, f'RPC timeout: {self.rpc_func}'))
                 log.critical(f'Schedule func failed to run {self.rpc_func}')
+                return False
 
-    def _run_untraced(self):
+    def _run_untraced(self, timeout=5) -> bool:
         """ Execute schedule RPC without tracing (fallback) """
         try:
             self.rpc.call_function_with_timeout(
                 func=self.rpc_func,
-                timeout=5,
+                timeout=timeout,
                 **self.rpc_kwargs
             )
             self.last_run = datetime.now()
             self.commit()
+            return True
         except Empty:
             log.critical(f'Schedule func failed to run {self.rpc_func}')
+            return False
